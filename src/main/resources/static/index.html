@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>短链服务</title>
+    <script src="https://cdn.bootcdn.net/ajax/libs/vue/3.4.21/vue.global.prod.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+            background: #f5f6f8;
+            color: #1f2329;
+            padding: 40px 20px;
+        }
+        .wrap { max-width: 860px; margin: 0 auto; }
+        h1 { font-size: 24px; margin-bottom: 6px; }
+        .sub { color: #8a919f; font-size: 13px; margin-bottom: 24px; }
+        .card {
+            background: #fff;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.06);
+            margin-bottom: 20px;
+        }
+        .row { display: flex; gap: 10px; }
+        input {
+            flex: 1;
+            height: 40px;
+            padding: 0 12px;
+            border: 1px solid #dcdfe6;
+            border-radius: 8px;
+            font-size: 14px;
+            outline: none;
+        }
+        input:focus { border-color: #3370ff; }
+        button {
+            height: 40px;
+            padding: 0 20px;
+            border: none;
+            border-radius: 8px;
+            background: #3370ff;
+            color: #fff;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        button:disabled { background: #a8c0ff; cursor: not-allowed; }
+        button.ghost { background: #f2f3f5; color: #1f2329; }
+        .expire { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: #8a919f; font-size: 13px; }
+        .expire input { flex: none; width: 90px; height: 32px; }
+        .result {
+            margin-top: 16px;
+            padding: 14px 16px;
+            background: #eef3ff;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .result a { color: #3370ff; font-size: 15px; text-decoration: none; word-break: break-all; }
+        .err { margin-top: 12px; color: #f54a45; font-size: 13px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th, td { text-align: left; padding: 12px 8px; border-bottom: 1px solid #f0f1f3; }
+        th { color: #8a919f; font-weight: 500; }
+        td.url { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #646a73; }
+        .code { font-family: Consolas, monospace; color: #3370ff; }
+        .empty { text-align: center; color: #b0b4bd; padding: 40px 0; font-size: 13px; }
+        .pager { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 16px; font-size: 13px; color: #8a919f; }
+        .pager button { height: 32px; padding: 0 14px; font-size: 13px; }
+        .toast {
+            position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%);
+            background: #1f2329; color: #fff; padding: 10px 20px; border-radius: 8px;
+            font-size: 13px; opacity: .95;
+        }
+    </style>
+</head>
+<body>
+<div id="app" class="wrap">
+    <h1>短链服务</h1>
+    <p class="sub">粘贴长链接生成短链，访问短链自动跳转并记录点击</p>
+
+    <div class="card">
+        <div class="row">
+            <input v-model.trim="longUrl" placeholder="https://example.com/very/long/url?with=params"
+                   @keyup.enter="create">
+            <button :disabled="loading" @click="create">{{ loading ? '生成中...' : '生成短链' }}</button>
+        </div>
+        <div class="expire">
+            <span>有效期</span>
+            <input v-model.number="expireDays" type="number" min="1" max="3650" placeholder="永久">
+            <span>天（留空表示永久）</span>
+        </div>
+        <div v-if="error" class="err">{{ error }}</div>
+        <div v-if="result" class="result">
+            <a :href="result.shortUrl" target="_blank">{{ result.shortUrl }}</a>
+            <button class="ghost" @click="copy(result.shortUrl)">复制</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <table>
+            <thead>
+            <tr>
+                <th style="width:150px">短码</th>
+                <th>原始链接</th>
+                <th style="width:90px">点击</th>
+                <th style="width:150px">创建时间</th>
+                <th style="width:70px"></th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr v-for="link in links" :key="link.id">
+                <td class="code">{{ link.shortCode }}</td>
+                <td class="url" :title="link.longUrl">{{ link.longUrl }}</td>
+                <td>{{ link.clickCount }}</td>
+                <td>{{ formatTime(link.createTime) }}</td>
+                <td><button class="ghost" style="height:28px;padding:0 10px;font-size:12px" @click="copy(shortUrlOf(link))">复制</button></td>
+            </tr>
+            <tr v-if="!links.length"><td colspan="5" class="empty">还没有短链，在上面生成一个试试</td></tr>
+            </tbody>
+        </table>
+        <div class="pager">
+            <span>共 {{ total }} 条</span>
+            <button class="ghost" :disabled="page <= 1" @click="load(page - 1)">上一页</button>
+            <span>{{ page }} / {{ totalPages }}</span>
+            <button class="ghost" :disabled="page >= totalPages" @click="load(page + 1)">下一页</button>
+        </div>
+    </div>
+
+    <div v-if="toast" class="toast">{{ toast }}</div>
+</div>
+
+<script>
+    const { createApp, ref, computed, onMounted } = Vue;
+
+    createApp({
+        setup() {
+            const longUrl = ref('');
+            const expireDays = ref(null);
+            const loading = ref(false);
+            const error = ref('');
+            const result = ref(null);
+            const links = ref([]);
+            const page = ref(1);
+            const size = 10;
+            const total = ref(0);
+            const toast = ref('');
+
+            const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size)));
+
+            async function create() {
+                error.value = '';
+                result.value = null;
+                if (!longUrl.value) {
+                    error.value = '请输入长链接';
+                    return;
+                }
+                loading.value = true;
+                try {
+                    const resp = await fetch('/api/links', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            longUrl: longUrl.value,
+                            expireDays: expireDays.value || null
+                        })
+                    });
+                    if (!resp.ok) {
+                        const data = await resp.json().catch(() => ({}));
+                        error.value = data.message || data.error || '生成失败';
+                        return;
+                    }
+                    result.value = await resp.json();
+                    longUrl.value = '';
+                    expireDays.value = null;
+                    await load(1);
+                } finally {
+                    loading.value = false;
+                }
+            }
+
+            async function load(p) {
+                const resp = await fetch(`/api/links?page=${p}&size=${size}`);
+                const data = await resp.json();
+                links.value = data.records || [];
+                total.value = data.total || 0;
+                page.value = p;
+            }
+
+            function shortUrlOf(link) {
+                return location.origin + '/' + link.shortCode;
+            }
+
+            function formatTime(t) {
+                return t ? t.replace('T', ' ').slice(0, 16) : '';
+            }
+
+            function copy(text) {
+                navigator.clipboard.writeText(text).then(() => showToast('已复制'))
+                    .catch(() => showToast('复制失败，请手动复制'));
+            }
+
+            function showToast(msg) {
+                toast.value = msg;
+                setTimeout(() => toast.value = '', 1500);
+            }
+
+            onMounted(() => load(1));
+
+            return { longUrl, expireDays, loading, error, result, links, page, total, totalPages,
+                create, load, shortUrlOf, formatTime, copy, toast };
+        }
+    }).mount('#app');
+</script>
+</body>
+</html>
